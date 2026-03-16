@@ -1,15 +1,21 @@
 import os
 import datetime
 import html
+import textwrap
+
 import requests
 import feedparser
+from openai import OpenAI
 
 BLOGGER_CLIENT_ID = os.environ["BLOGGER_CLIENT_ID"]
 BLOGGER_CLIENT_SECRET = os.environ["BLOGGER_CLIENT_SECRET"]
 BLOGGER_REFRESH_TOKEN = os.environ["BLOGGER_REFRESH_TOKEN"]
 BLOGGER_BLOG_ID = os.environ["BLOGGER_BLOG_ID"]
 
-X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN")  # まだ設定しなくてOK
+X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN")
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def get_blogger_access_token():
@@ -26,43 +32,32 @@ def get_blogger_access_token():
 
 
 # ==============================
-# RSS 取得まわり
+# RSS 設定
 # ==============================
 
-# 戦争・紛争（西側メディア）
 WAR_FEEDS_WEST = [
-    # AP
     "https://apnews.com/rss/apf-worldnews",
-    # Reuters
     "https://feeds.reuters.com/reuters/worldNews",
-    # BBC World
     "http://feeds.bbci.co.uk/news/world/rss.xml",
 ]
 
-# 戦争・紛争（相手側・多極メディア）
 WAR_FEEDS_OTHER = [
-    # Al Jazeera (Middle East & world)
     "https://www.aljazeera.com/xml/rss/all.xml",
-    # RT
     "https://www.rt.com/rss/news/",
-    # CGTN
-    "https://rss.app/feeds/0F1p4rM0Uuv8wRxR.xml",  # 非公式RSSだが例として
 ]
 
-# 重大ニュース（一般）
 MAJOR_FEEDS = [
     "https://feeds.reuters.com/reuters/topNews",
     "http://feeds.bbci.co.uk/news/rss.xml",
 ]
 
-# AI・テックニュース
 AI_FEEDS = [
     "https://techcrunch.com/tag/artificial-intelligence/feed/",
     "https://www.marktechpost.com/feed/",
 ]
 
 
-def fetch_feed_items(feed_urls, limit_per_feed=5):
+def fetch_feed_items(feed_urls, limit_total=8):
     """複数RSSから記事を集めて、シンプルなdictリストにする。"""
     items = []
     for url in feed_urls:
@@ -72,102 +67,177 @@ def fetch_feed_items(feed_urls, limit_per_feed=5):
             continue
 
         source_title = parsed.feed.get("title", url) if hasattr(parsed, "feed") else url
-        for entry in parsed.entries[:limit_per_feed]:
+        for entry in parsed.entries:
             title = entry.get("title", "No title")
             link = entry.get("link", "")
+            summary = entry.get("summary", "") or entry.get("description", "")
             published = entry.get("published", "") or entry.get("updated", "")
             items.append(
                 {
                     "source": source_title,
                     "title": title,
                     "link": link,
+                    "summary": summary,
                     "published": published,
                 }
             )
-    return items
+    # 新しいものから適当に limit_total 件
+    return items[:limit_total]
 
 
-def render_items_as_list(items):
-    """記事リストをHTMLの <ul> として描画。"""
-    if not items:
-        return "<p>該当するニュースが見つかりませんでした。</p>"
+def build_category_prompt(category_name, items, focus_note):
+    """1カテゴリ分のプロンプトを作る。"""
+    lines = []
+    lines.append(f"【カテゴリ】{category_name}")
+    lines.append("【フォーカス】" + focus_note)
+    lines.append("【元記事リスト】")
 
-    lines = ["<ul>"]
-    for item in items:
-        title = html.escape(item["title"])
-        source = html.escape(item["source"])
-        link = html.escape(item["link"])
-        pub = html.escape(item["published"]) if item["published"] else ""
-        meta = f"{source}"
-        if pub:
-            meta += f" / {pub}"
-        lines.append(
-            f'<li><a href="{link}" target="_blank" rel="noopener noreferrer">{title}</a><br>'
-            f'<span style="font-size: 0.85em; color: #888;">{meta}</span></li>'
+    for i, item in enumerate(items, start=1):
+        title = item["title"]
+        source = item["source"]
+        pub = item["published"]
+        summary = html.unescape(
+            textwrap.shorten(
+                html.unescape(item["summary"]).replace("\n", " "),
+                width=500,
+                placeholder="…",
+            )
         )
-    lines.append("</ul>")
+        link = item["link"]
+        lines.append(
+            f"\n[{i}] タイトル: {title}\n"
+            f"    メディア: {source}\n"
+            f"    日付: {pub}\n"
+            f"    概要(英語など): {summary}\n"
+            f"    URL: {link}"
+        )
+
+    lines.append(
+        """
+【タスク】
+上の元記事リストをもとに、日本語で次の形式の要約を作ってください。
+
+- 見出し（1行）
+- 要点（3〜6行）
+- なぜ重要か（2〜4行）
+- バイアス・限界への注意（2〜4行）
+- 日本や世界への影響（2〜4行）
+
+条件：
+- 口調は落ち着いたニュース解説。
+- 事実と推測は分けて書く。
+- 片側だけの主張に寄り過ぎないように、反対側の論点も必ず触れる。
+- 全体で日本語 600〜800文字程度に収める。
+"""
+    )
     return "\n".join(lines)
 
 
+def summarize_with_openai(system_prompt, user_prompt):
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.4,
+        max_tokens=1200,
+    )
+    return resp.choices[0].message.content.strip()
+
+
 def generate_ai_morning_news():
-    """RSSベースで『戦争・紛争＋重大ニュース＋AIニュース』の素材集を作る。"""
+    """RSS + OpenAI で『世界情勢＆AI朝刊』を生成。"""
     today = datetime.date.today().strftime("%Y-%m-%d")
-    title = f"{today} 世界情勢＆AI朝刊（過去24時間）"
+    title = f"{today} 世界情勢＆AI・テック朝刊（過去24時間）"
 
-    # 戦争・紛争：西側＆その他
-    war_west = fetch_feed_items(WAR_FEEDS_WEST, limit_per_feed=4)
-    war_other = fetch_feed_items(WAR_FEEDS_OTHER, limit_per_feed=4)
+    # RSS 取得
+    war_west_items = fetch_feed_items(WAR_FEEDS_WEST, limit_total=8)
+    war_other_items = fetch_feed_items(WAR_FEEDS_OTHER, limit_total=8)
+    major_items = fetch_feed_items(MAJOR_FEEDS, limit_total=8)
+    ai_items = fetch_feed_items(AI_FEEDS, limit_total=8)
 
-    # 重大ニュース
-    major_news = fetch_feed_items(MAJOR_FEEDS, limit_per_feed=5)
-
-    # AIニュース
-    ai_news = fetch_feed_items(AI_FEEDS, limit_per_feed=5)
-
-    # HTML 組み立て
-    content_parts = []
-
-    content_parts.append(f"<h2>{today} 世界情勢＆AI朝刊（過去24時間）</h2>")
-
-    # 注意書き
-    content_parts.append(
-        """
-<p><b>⚠ バイアスに関する注意：</b><br>
-以下は各メディアの報道をそのまま並べた「素材集」です。同じ出来事についても、
-西側メディアと相手側メディアで強調点や表現が大きく異なることがあります。
-必ず両方を読み比べ、自分の頭で判断してください。</p>
-"""
+    system_prompt = (
+        "あなたは、戦争・紛争・国際情勢・AI・テックに詳しい日本語のニュース解説者です。"
+        "極端な立場を取らず、複数の視点を並べて読者が自分で判断できるように整理します。"
     )
 
-    # 戦争・紛争
-    content_parts.append("<h3>戦争・紛争（西側メディア）</h3>")
-    content_parts.append(render_items_as_list(war_west))
+    # カテゴリ別要約
+    sections = []
 
-    content_parts.append("<h3>戦争・紛争（相手側・多極メディア）</h3>")
-    content_parts.append(render_items_as_list(war_other))
+    # 戦争・紛争（西側）
+    if war_west_items:
+        prompt_west = build_category_prompt(
+            "戦争・紛争（西側メディア）",
+            war_west_items,
+            "西側メディアがどう報じているかに着目しつつ、事実ベースで整理してください。",
+        )
+        summary_west = summarize_with_openai(system_prompt, prompt_west)
+        sections.append("<h3>戦争・紛争（西側メディア）</h3>")
+        sections.append(f"<pre>{html.escape(summary_west)}</pre>")
+
+    # 戦争・紛争（相手側・多極）
+    if war_other_items:
+        prompt_other = build_category_prompt(
+            "戦争・紛争（相手側・多極メディア）",
+            war_other_items,
+            "西側と異なる framing や主張に注意しつつ、どの点が事実で共通しているかも整理してください。",
+        )
+        summary_other = summarize_with_openai(system_prompt, prompt_other)
+        sections.append("<h3>戦争・紛争（相手側・多極メディア）</h3>")
+        sections.append(f"<pre>{html.escape(summary_other)}</pre>")
 
     # 重大ニュース
-    content_parts.append("<h3>重大ニュース（世界）</h3>")
-    content_parts.append(render_items_as_list(major_news))
+    if major_items:
+        prompt_major = build_category_prompt(
+            "重大ニュース（世界）",
+            major_items,
+            "経済・政治・社会・技術など、世界に広い影響がありそうなトピックを中心に整理してください。",
+        )
+        summary_major = summarize_with_openai(system_prompt, prompt_major)
+        sections.append("<h3>重大ニュース（世界）</h3>")
+        sections.append(f"<pre>{html.escape(summary_major)}</pre>")
 
-    # AIニュース
-    content_parts.append("<h3>AI・テックニュース</h3>")
-    content_parts.append(render_items_as_list(ai_news))
+    # AI・テック
+    if ai_items:
+        prompt_ai = build_category_prompt(
+            "AI・テックニュース",
+            ai_items,
+            "AIモデル・エージェント・半導体・規制など、ビジネスや開発に効きそうなポイントを中心に整理してください。",
+        )
+        summary_ai = summarize_with_openai(system_prompt, prompt_ai)
+        sections.append("<h3>AI・テックニュース</h3>")
+        sections.append(f"<pre>{html.escape(summary_ai)}</pre>")
 
-    # 総括メモ欄（自分で書き足す前提）
-    content_parts.append(
-        """
-<h3>全体のメモ（自分用）</h3>
-<p>※ここは自分で追記する欄：</p>
-<ul>
-<li>気になったトピック：</li>
-<li>西側と相手側で報道が食い違っている点：</li>
-<li>事業・投資への影響メモ：</li>
-</ul>
+    # 冒頭＆注意書き
+    header = f"""
+<h2>{title}</h2>
+<p><b>読み方の前提：</b><br>
+本記事は、複数のメディア（西側・相手側・多極）からの報道をもとにAIが要約したものです。
+元記事の選び方や情報源のバイアス、AIの要約の限界により、すべてが完全に中立・正確であるとは限りません。
+必ずリンク先の一次情報や公式発表も確認し、自分の頭で判断するための「下地」として使ってください。</p>
 """
-    )
 
-    content = "\n".join(content_parts)
+    # 参考リンク一覧（元記事リストをそのまま載せる）
+    def render_links_block(title_block, items):
+        if not items:
+            return ""
+        lines = [f"<h4>{title_block}：参考リンク</h4>", "<ul>"]
+        for item in items:
+            t = html.escape(item["title"])
+            s = html.escape(item["source"])
+            l = html.escape(item["link"])
+            lines.append(f'<li><a href="{l}" target="_blank" rel="noopener noreferrer">{t}</a> – {s}</li>')
+        lines.append("</ul>")
+        return "\n".join(lines)
+
+    links_block = []
+    links_block.append(render_links_block("戦争・紛争（西側）", war_west_items))
+    links_block.append(render_links_block("戦争・紛争（相手側・多極）", war_other_items))
+    links_block.append(render_links_block("重大ニュース（世界）", major_items))
+    links_block.append(render_links_block("AI・テックニュース", ai_items))
+
+    content = header + "\n".join(sections) + "\n".join(links_block)
     return title, content
 
 
@@ -192,8 +262,7 @@ def post_to_x(status_text):
     if not X_BEARER_TOKEN:
         print("X_BEARER_TOKEN が設定されていないのでスキップ")
         return
-
-    # 実際のエンドポイントは後で正式なX APIに合わせて変更
+    # 実際のエンドポイントはX APIの仕様に合わせて要調整
     url = "https://api.x.com/2/tweets"
     headers = {
         "Authorization": f"Bearer {X_BEARER_TOKEN}",
@@ -213,7 +282,6 @@ def main():
     tweet_text = f"AI朝刊を更新しました：{title}\n{post_url}"
     if len(tweet_text) > 260:
         tweet_text = tweet_text[:257] + "..."
-
     post_to_x(tweet_text)
 
 
