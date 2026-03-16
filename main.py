@@ -126,91 +126,7 @@ def build_category_prompt(category_name, items, focus_note):
 - 口調は落ち着いたニュース解説。
 - 事実と推測は分けて書く。
 - 片側だけの主張に寄り過ぎないように、反対側の論点も必ず触れる。
-- 全体で日本語 600〜800文字程度に収める。
-"""
-    )
-    return "\n".join(lines)
-
-
-def summarize_with_openai(system_prompt, user_prompt):
-    resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.4,
-        max_tokens=1200,
-    )
-    return resp.choices[0].message.content.strip()
-
-
-def summary_text_to_html(text: str) -> str:
-    """OpenAIの要約テキストを、読みやすいHTMLに変換する。"""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-
-    html_lines = []
-    in_list = False
-
-    for line in lines:
-        if line.startswith("- "):
-            if not in_list:
-                html_lines.append("<ul>")
-                in_list = True
-            html_lines.append(f"<li>{html.escape(line[2:])}</li>")
-        else:
-            if in_list:
-                html_lines.append("</ul>")
-                in_list = False
-
-            if line.startswith("見出し"):
-                html_lines.append(f"<p><b>{html.escape(line)}</b></p>")
-            elif "要点" in line or "なぜ重要か" in line or "影響" in line or "バイアス" in line:
-                html_lines.append(f"<p><b>{html.escape(line)}</b></p>")
-            else:
-                html_lines.append(f"<p>{html.escape(line)}</p>")
-
-    if in_list:
-        html_lines.append("</ul>")
-
-    return "\n".join(html_lines)
-
-
-def generate_ai_morning_news():
-    """RSS + OpenAI で『世界情勢＆AI朝刊』を生成。"""
-    today = datetime.date.today().strftime("%Y-%m-%d")
-    title = f"{today} 世界情勢＆AI・テック朝刊（過去24時間）"
-
-    # RSS 取得
-    war_west_items = fetch_feed_items(WAR_FEEDS_WEST, limit_total=8)
-    war_other_items = fetch_feed_items(WAR_FEEDS_OTHER, limit_total=8)
-    major_items = fetch_feed_items(MAJOR_FEEDS, limit_total=8)
-    ai_items = fetch_feed_items(AI_FEEDS, limit_total=8)
-
-    system_prompt = (
-        "あなたは、戦争・紛争・国際情勢・AI・テックに詳しい日本語のニュース解説者です。"
-        "極端な立場を取らず、複数の視点を並べて読者が自分で判断できるように整理します。"
-    )
-
-    sections = []
-
-    # 戦争・紛争（西側）
-    if war_west_items:
-        prompt_west = build_category_prompt(
-            "戦争・紛争（西側メディア）",
-            war_west_items,
-            "西側メディアがどう報じているかに着目しつつ、事実ベースで整理してください。",
-        )
-        summary_west = summarize_with_openai(system_prompt, prompt_west)
-        sections.append("<h3>戦争・紛争（西側メディア）</h3>")
-        sections.append(summary_text_to_html(summary_west))
-
-    # 戦争・紛争（相手側・多極）
-    if war_other_items:
-        prompt
-git add main.py
-git commit -m "Improve layout of summaries"
-git push
+- 全体で日本語 600〜
 cd ~/github/ai-morning-news
 
 cat << 'EOF' > main.py
@@ -238,84 +154,7 @@ def get_blogger_access_token():
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "client_id": BLOGGER_CLIENT_ID,
-        "client_secret": BLOGGER_CLIENT_SECRET",
-        "refresh_token": BLOGGER_REFRESH_TOKEN,
-        "grant_type": "refresh_token",
-    }
-    resp = requests.post(token_url, data=data)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-# ==============================
-# RSS 設定
-# ==============================
-
-WAR_FEEDS_WEST = [
-    "https://apnews.com/rss/apf-worldnews",
-    "https://feeds.reuters.com/reuters/worldNews",
-    "http://feeds.bbci.co.uk/news/world/rss.xml",
-]
-
-WAR_FEEDS_OTHER = [
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://www.rt.com/rss/news/",
-]
-
-MAJOR_FEEDS = [
-    "https://feeds.reuters.com/reuters/topNews",
-    "http://feeds.bbci.co.uk/news/rss.xml",
-]
-
-AI_FEEDS = [
-    "https://techcrunch.com/tag/artificial-intelligence/feed/",
-    "https://www.marktechpost.com/feed/",
-]
-
-
-def fetch_feed_items(feed_urls, limit_total=8):
-    """複数RSSから記事を集めて、シンプルなdictリストにする。"""
-    items = []
-    for url in feed_urls:
-        try:
-            parsed = feedparser.parse(url)
-        except Exception:
-            continue
-
-        source_title = parsed.feed.get("title", url) if hasattr(parsed, "feed") else url
-        for entry in parsed.entries:
-            title = entry.get("title", "No title")
-            link = entry.get("link", "")
-            summary = entry.get("summary", "") or entry.get("description", "")
-            published =
-cd ~/github/ai-morning-news
-
-cat << 'EOF' > main.py
-import os
-import datetime
-import html
-import textwrap
-
-import requests
-import feedparser
-from openai import OpenAI
-
-BLOGGER_CLIENT_ID = os.environ["BLOGGER_CLIENT_ID"]
-BLOGGER_CLIENT_SECRET = os.environ["BLOGGER_CLIENT_SECRET"]
-BLOGGER_REFRESH_TOKEN = os.environ["BLOGGER_REFRESH_TOKEN"]
-BLOGGER_BLOG_ID = os.environ["BLOGGER_BLOG_ID"]
-
-X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN")
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-
-def get_blogger_access_token():
-    token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "client_id": BLOGGER_CLIENT_ID,
-        "client_secret": BLOGGER_CLIENT_SECRET",
+        "client_secret": BLOGGER_CLIENT_SECRET,
         "refresh_token": BLOGGER_REFRESH_TOKEN,
         "grant_type": "refresh_token",
     }
@@ -544,7 +383,7 @@ def generate_ai_morning_news():
         sections.append(summary_text_to_html(summary_ai))
         sections.append("</section>")
 
-    # 冒頭＆CSSつきヘッダー（行間と改行を広めに調整）
+    # 冒頭＆CSSつきヘッダー
     header = f"""
 <style>
 .ai-brief-root {{
