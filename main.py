@@ -32,7 +32,7 @@ def get_blogger_access_token():
 
 
 # ==============================
-# RSS 設定
+# RSS settings
 # ==============================
 
 WAR_FEEDS_WEST = [
@@ -58,7 +58,7 @@ AI_FEEDS = [
 
 
 def fetch_feed_items(feed_urls, limit_total=8):
-    """複数RSSから記事を集めて、シンプルなdictリストにする。"""
+    """Fetch articles from multiple RSS feeds and return a simple list of dicts."""
     items = []
     for url in feed_urls:
         try:
@@ -85,11 +85,11 @@ def fetch_feed_items(feed_urls, limit_total=8):
 
 
 def build_category_prompt(category_name, items, focus_note):
-    """1カテゴリ分のプロンプトを作る。"""
+    """Build a prompt for one category (instructions in English, ask for Japanese output)."""
     lines = []
-    lines.append(f"【カテゴリ】{category_name}")
-    lines.append("【フォーカス】" + focus_note)
-    lines.append("【元記事リスト】")
+    lines.append(f"[Category] {category_name}")
+    lines.append(f"[Focus] {focus_note}")
+    lines.append("[Source articles]")
 
     for i, item in enumerate(items, start=1):
         title = item["title"]
@@ -104,161 +104,34 @@ def build_category_prompt(category_name, items, focus_note):
         )
         link = item["link"]
         lines.append(
-            f"\n[{i}] タイトル: {title}\n"
-            f"    メディア: {source}\n"
-            f"    日付: {pub}\n"
-            f"    概要(英語など): {summary}\n"
+            f"\n[{i}] Title: {title}\n"
+            f"    Source: {source}\n"
+            f"    Date: {pub}\n"
+            f"    Summary (original language): {summary}\n"
             f"    URL: {link}"
         )
 
     lines.append(
         """
-【タスク】
-上の元記事リストをもとに、日本語で次の形式の要約を作ってください。
+[Task]
 
-- 見出し（1行）
-- 要点（3〜6行）
-- なぜ重要か（2〜4行）
-- バイアス・限界への注意（2〜4行）
-- 日本や世界への影響（2〜4行）
+You are an analyst who writes calm, neutral news briefs.
 
-条件：
-- 口調は落ち着いたニュース解説。
-- 事実と推測は分けて書く。
-- 片側だけの主張に寄り過ぎないように、反対側の論点も必ず触れる。
-- 全体で日本語 600〜
-cd ~/github/ai-morning-news
+Using the articles above, write a JAPANESE summary with the following structure:
 
-cat << 'EOF' > main.py
-import os
-import datetime
-import html
-import textwrap
+- 見出し: 1行
+- 要点: 箇条書き 3〜6行
+- なぜ重要か: 2〜4行
+- バイアス・限界への注意: 2〜4行
+- 日本や世界への影響: 2〜4行
 
-import requests
-import feedparser
-from openai import OpenAI
+Constraints:
 
-BLOGGER_CLIENT_ID = os.environ["BLOGGER_CLIENT_ID"]
-BLOGGER_CLIENT_SECRET = os.environ["BLOGGER_CLIENT_SECRET"]
-BLOGGER_REFRESH_TOKEN = os.environ["BLOGGER_REFRESH_TOKEN"]
-BLOGGER_BLOG_ID = os.environ["BLOGGER_BLOG_ID"]
-
-X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN")
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-
-def get_blogger_access_token():
-    token_url = "https://oauth2.googleapis.com/token"
-    data = {
-        "client_id": BLOGGER_CLIENT_ID,
-        "client_secret": BLOGGER_CLIENT_SECRET,
-        "refresh_token": BLOGGER_REFRESH_TOKEN,
-        "grant_type": "refresh_token",
-    }
-    resp = requests.post(token_url, data=data)
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-# ==============================
-# RSS 設定
-# ==============================
-
-WAR_FEEDS_WEST = [
-    "https://apnews.com/rss/apf-worldnews",
-    "https://feeds.reuters.com/reuters/worldNews",
-    "http://feeds.bbci.co.uk/news/world/rss.xml",
-]
-
-WAR_FEEDS_OTHER = [
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://www.rt.com/rss/news/",
-]
-
-MAJOR_FEEDS = [
-    "https://feeds.reuters.com/reuters/topNews",
-    "http://feeds.bbci.co.uk/news/rss.xml",
-]
-
-AI_FEEDS = [
-    "https://techcrunch.com/tag/artificial-intelligence/feed/",
-    "https://www.marktechpost.com/feed/",
-]
-
-
-def fetch_feed_items(feed_urls, limit_total=8):
-    """複数RSSから記事を集めて、シンプルなdictリストにする。"""
-    items = []
-    for url in feed_urls:
-        try:
-            parsed = feedparser.parse(url)
-        except Exception:
-            continue
-
-        source_title = parsed.feed.get("title", url) if hasattr(parsed, "feed") else url
-        for entry in parsed.entries:
-            title = entry.get("title", "No title")
-            link = entry.get("link", "")
-            summary = entry.get("summary", "") or entry.get("description", "")
-            published = entry.get("published", "") or entry.get("updated", "")
-            items.append(
-                {
-                    "source": source_title,
-                    "title": title,
-                    "link": link,
-                    "summary": summary,
-                    "published": published,
-                }
-            )
-    return items[:limit_total]
-
-
-def build_category_prompt(category_name, items, focus_note):
-    """1カテゴリ分のプロンプトを作る。"""
-    lines = []
-    lines.append(f"【カテゴリ】{category_name}")
-    lines.append("【フォーカス】" + focus_note)
-    lines.append("【元記事リスト】")
-
-    for i, item in enumerate(items, start=1):
-        title = item["title"]
-        source = item["source"]
-        pub = item["published"]
-        summary = html.unescape(
-            textwrap.shorten(
-                html.unescape(item["summary"]).replace("\n", " "),
-                width=500,
-                placeholder="…",
-            )
-        )
-        link = item["link"]
-        lines.append(
-            f"\n[{i}] タイトル: {title}\n"
-            f"    メディア: {source}\n"
-            f"    日付: {pub}\n"
-            f"    概要(英語など): {summary}\n"
-            f"    URL: {link}"
-        )
-
-    lines.append(
-        """
-【タスク】
-上の元記事リストをもとに、日本語で次の形式の要約を作ってください。
-
-- 見出し（1行）
-- 要点（3〜6行）
-- なぜ重要か（2〜4行）
-- バイアス・限界への注意（2〜4行）
-- 日本や世界への影響（2〜4行）
-
-条件：
-- 口調は落ち着いたニュース解説。
-- 事実と推測は分けて書く。
-- 片側だけの主張に寄り過ぎないように、反対側の論点も必ず触れる。
-- 全体で日本語 600〜800文字程度に収める。
+- Output MUST be in Japanese.
+- Use a calm, professional tone.
+- Separate facts from speculation.
+- Mention arguments or viewpoints from BOTH "Western" and "other" sides when relevant.
+- Total length: about 600–800 Japanese characters.
 """
     )
     return "\n".join(lines)
@@ -278,7 +151,7 @@ def summarize_with_openai(system_prompt, user_prompt):
 
 
 def summary_text_to_html(text: str) -> str:
-    """OpenAIの要約テキストを、読みやすいHTMLに変換する。"""
+    """Convert summary text into readable HTML."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     html_lines = []
@@ -295,14 +168,8 @@ def summary_text_to_html(text: str) -> str:
                 html_lines.append("</ul>")
                 in_list = False
 
-            if line.startswith("見出し"):
-                html_lines.append(f'<p class="ai-brief-label">{html.escape(line)}</p>')
-            elif (
-                "要点" in line
-                or "なぜ重要か" in line
-                or "影響" in line
-                or "バイアス" in line
-            ):
+            # Japanese section labels starting with e.g. "見出し", "要点" etc. will still work here
+            if any(key in line for key in ["見出し", "要点", "なぜ重要か", "影響", "バイアス"]):
                 html_lines.append(f'<p class="ai-brief-label">{html.escape(line)}</p>')
             else:
                 html_lines.append(f'<p class="ai-brief-text">{html.escape(line)}</p>')
@@ -314,29 +181,27 @@ def summary_text_to_html(text: str) -> str:
 
 
 def generate_ai_morning_news():
-    """RSS + OpenAI で『世界情勢＆AI朝刊』を生成。"""
+    """Generate the world & AI morning brief using RSS + OpenAI."""
     today = datetime.date.today().strftime("%Y-%m-%d")
     title = f"{today} 世界情勢＆AI・テック朝刊（過去24時間）"
 
-    # RSS 取得
     war_west_items = fetch_feed_items(WAR_FEEDS_WEST, limit_total=8)
     war_other_items = fetch_feed_items(WAR_FEEDS_OTHER, limit_total=8)
     major_items = fetch_feed_items(MAJOR_FEEDS, limit_total=8)
     ai_items = fetch_feed_items(AI_FEEDS, limit_total=8)
 
     system_prompt = (
-        "あなたは、戦争・紛争・国際情勢・AI・テックに詳しい日本語のニュース解説者です。"
-        "極端な立場を取らず、複数の視点を並べて読者が自分で判断できるように整理します。"
+        "You are a Japanese news analyst summarizing world conflicts, geopolitics, "
+        "and AI/tech topics in clear, neutral Japanese for busy readers."
     )
 
     sections = []
 
-    # 戦争・紛争（西側）
     if war_west_items:
         prompt_west = build_category_prompt(
             "戦争・紛争（西側メディア）",
             war_west_items,
-            "西側メディアがどう報じているかに着目しつつ、事実ベースで整理してください。",
+            "Focus on how Western media frames the situation, but summarize in a balanced, fact-based way.",
         )
         summary_west = summarize_with_openai(system_prompt, prompt_west)
         sections.append('<section class="ai-brief-section">')
@@ -344,12 +209,11 @@ def generate_ai_morning_news():
         sections.append(summary_text_to_html(summary_west))
         sections.append("</section>")
 
-    # 戦争・紛争（相手側・多極）
     if war_other_items:
         prompt_other = build_category_prompt(
             "戦争・紛争（相手側・多極メディア）",
             war_other_items,
-            "西側と異なる framing や主張に注意しつつ、どの点が事実で共通しているかも整理してください。",
+            "Focus on how non-Western / opposing / multipolar media frames the situation, and highlight both overlaps and contradictions with Western coverage.",
         )
         summary_other = summarize_with_openai(system_prompt, prompt_other)
         sections.append('<section class="ai-brief-section">')
@@ -357,12 +221,11 @@ def generate_ai_morning_news():
         sections.append(summary_text_to_html(summary_other))
         sections.append("</section>")
 
-    # 重大ニュース
     if major_items:
         prompt_major = build_category_prompt(
             "重大ニュース（世界）",
             major_items,
-            "経済・政治・社会・技術など、世界に広い影響がありそうなトピックを中心に整理してください。",
+            "Pick global-impact topics across economy, politics, society, and technology.",
         )
         summary_major = summarize_with_openai(system_prompt, prompt_major)
         sections.append('<section class="ai-brief-section">')
@@ -370,12 +233,11 @@ def generate_ai_morning_news():
         sections.append(summary_text_to_html(summary_major))
         sections.append("</section>")
 
-    # AI・テック
     if ai_items:
         prompt_ai = build_category_prompt(
             "AI・テックニュース",
             ai_items,
-            "AIモデル・エージェント・半導体・規制など、ビジネスや開発に効きそうなポイントを中心に整理してください。",
+            "Focus on AI models, agents, chips, big company moves, and regulation that matter for business and development.",
         )
         summary_ai = summarize_with_openai(system_prompt, prompt_ai)
         sections.append('<section class="ai-brief-section">')
@@ -383,7 +245,6 @@ def generate_ai_morning_news():
         sections.append(summary_text_to_html(summary_ai))
         sections.append("</section>")
 
-    # 冒頭＆CSSつきヘッダー
     header = f"""
 <style>
 .ai-brief-root {{
@@ -447,8 +308,8 @@ def generate_ai_morning_news():
 <div class="ai-brief-root">
   <h2>{title}</h2>
   <p class="ai-brief-note">
-    本記事は、複数のメディア（西側・相手側・多極）からの報道をもとにAIが要約したものです。
-    元記事の選び方や情報源のバイアス、AIの要約の限界により、すべてが完全に中立・正確であるとは限りません。
+    本記事は、複数の報道機関からの記事をもとにAIが要約したものです。
+    情報源のバイアスやAI要約の限界により、すべてが完全に中立・正確であるとは限りません。
     必ずリンク先の一次情報や公式発表も確認し、自分の頭で判断するための「下地」として使ってください。
   </p>
 """
